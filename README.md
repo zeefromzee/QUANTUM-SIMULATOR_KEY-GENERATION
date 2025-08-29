@@ -7,3 +7,4 @@ To simulate quantum measurement, the sampled data is combined with additional sy
 A live entropy graph shows how randomness fluctuates over time. Simple experiments, such as covering the webcam or shining a flashlight, visibly shift the entropy values, demonstrating the sensitivity of the setup to environmental changes.
 
 This is an early prototype, developed in the first semester of undergraduate study, with planned updates including data logging, statistical randomness testing, and extended analysis.
+(The source code is yet to be published and will not be published until a more polished version is created)
