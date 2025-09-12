@@ -50,6 +50,7 @@ Example (on video overlay):
 ```
 Quantum Key: a7d92f1c5b13d8e2
 Measurement Basis: circle
+Entropy: 4.03
 ```
 
 ---
