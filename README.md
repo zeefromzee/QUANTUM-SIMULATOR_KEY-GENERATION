@@ -25,7 +25,7 @@ This is an **educational project** that demonstrates how randomness can be harve
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/yourusername/quantum-key-generator.git
+git clone https://github.com/zeefromzee/quantum-key-generator.git
 cd quantum-key-generator
 pip install opencv-python numpy
 ```
