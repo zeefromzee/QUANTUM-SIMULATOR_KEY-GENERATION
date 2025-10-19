@@ -9,7 +9,7 @@ This is an **educational project** that demonstrates how randomness can be harve
 
 ---
 
-## Features
+## Features here:
 
 * Uses live webcam feed as a source of entropy.
 * Randomly selects a "measurement basis" (rectangle, circle, or ellipse).
