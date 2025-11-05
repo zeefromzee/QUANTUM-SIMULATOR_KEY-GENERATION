@@ -1,4 +1,4 @@
-# ☆ﾟ.*･Quantum-Inspired Key Generator & NIST Randomness Test Suite･*.ﾟ☆
+# .*･Quantum-Inspired Key Generator & NIST Randomness Test Suite･*.☆
 
 Welcome to the shiny ✧ professional ✧ quantum-inspired cryptographic key generator project, paired with a comprehensive randomness analytics suite. This system simulates quantum entropy extraction and applies NIST-grade randomness testing to help you generate and validate secure keys.
 
