@@ -121,7 +121,7 @@ These results showcase robust randomness and consistently high statistical quali
 ## ⋆ Author & Source ⋆
 
 - Author: [zeefromzee](https://github.com/zeefromzee)  
-- Repo: [QUANTUM-SIMULATOR_KEY-GENERATION](https://github.com/zeefromzee/QUANTUM-SIMULATOR_KEY-GENERATION)
+- Repo: [Quantum KeyGen](https://github.com/zeefromzee/QUANTUM-SIMULATOR_KEY-GENERATION)
 
 ---
 
