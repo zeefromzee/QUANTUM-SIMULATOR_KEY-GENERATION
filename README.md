@@ -72,8 +72,10 @@ pip install numpy opencv-python matplotlib customtkinter pandas cryptography sci
 2. **Headless Batch Test:**  
    ```python
    from NIST_TESTS_ALGO import test_key_randomness
-   test_key_randomness("enc.csv")
-   ```
+   test_key_randomness("enc.csv") ```
+
+3. **Graph Generated from ENtropy Data**
+   <img width="600" height="400" alt="crypto_graph1" src="https://github.com/user-attachments/assets/baeaa446-41d4-42cf-8a91-2ec2d27da54e" />
 
 ---
 
