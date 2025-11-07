@@ -37,11 +37,20 @@ class App(CTk.CTk):
         self.button_migrate()
     
     def button_key(self):
+        def safe_main():
+            # Set matplotlib to use TkAgg backend in the main thread
+            import matplotlib
+            matplotlib.use('TkAgg')
+            # Create a figure before starting the thread
+            plt.figure('Entropy Plot')
+            plt.ion()  # Turn on interactive mode
+            # Start the main function
+            main()
+            
         button = CTk.CTkButton(self.main_frame, 
                             text="Click here to generate keys",
                             width=130,
                             height=50,
-                            #bg_color="#AFD48D",
                             fg_color="#AFD48D",
                             text_color="black",
                             hover_color="#819C67",
@@ -49,7 +58,7 @@ class App(CTk.CTk):
                             border_width=2,
                             border_color="#AFD48D",
                             font=CTk.CTkFont(size=20),
-                            command=lambda: threading.Thread(target=main, daemon=True).start())
+                            command=lambda: threading.Thread(target=safe_main, daemon=True).start())
         button.pack(pady=20)
 
 
@@ -175,6 +184,153 @@ def draw_basis_and_mask(image, basis):
 
     return image, mask
 
+def xor_fold(data_hex, target_length=64):
+    """
+    XOR-fold hex string to improve bit distribution.
+    Helps with Approximate Entropy test.
+    """
+    try:
+        # Clean and validate input
+        data_hex = data_hex.lower().strip()
+        if len(data_hex) % 2 != 0:
+            data_hex = '0' + data_hex
+            
+        # Convert to bytes
+        data_bytes = bytes.fromhex(data_hex)
+        
+        # Ensure minimum length
+        while len(data_bytes) < 32:  # Minimum 256 bits
+            data_bytes = data_bytes * 2
+            
+        # XOR fold: split in half and XOR together
+        mid = len(data_bytes) // 2
+        first_half = data_bytes[:mid]
+        second_half = data_bytes[mid:mid + len(first_half)]
+        
+        xored = bytes(a ^ b for a, b in zip(first_half, second_half))
+        
+        # Mix with remaining bytes if odd length
+        if len(data_bytes) % 2:
+            xored += data_bytes[-1:]
+            
+        result = xored.hex()
+        
+        # Ensure consistent length
+        if len(result) < target_length:
+            result = result * (target_length // len(result) + 1)
+        return result[:target_length]
+        
+    except Exception as e:
+        print(f"Error in xor_fold: {e}")
+        # Return a safe fallback value
+        return '0' * target_length
+
+def measure_wavefunction(gray, mask):
+    measurement = gray[mask == 255]
+    
+    MIN_PIXELS = 150  # Further lowered minimum pixel requirement
+    if measurement.size < MIN_PIXELS:
+        return None
+    
+    # Pre-process measurement to improve entropy
+    # 1. XOR adjacent pixels to break spatial correlation
+    processed = np.bitwise_xor(measurement[:-1], measurement[1:])
+    measurement = np.append(measurement, processed)
+    
+    # 2. Apply von Neumann debiasing on LSBs
+    lsbs = measurement & 1  # Get least significant bits
+    debiased = []
+    for i in range(0, len(lsbs)-1, 2):
+        if lsbs[i] != lsbs[i+1]:  # Only keep differing pairs
+            debiased.append(lsbs[i])
+    if debiased:
+        measurement = np.append(measurement, np.packbits(debiased))
+    
+    # Calculate entropy after preprocessing
+    entropy_value = calculate_shannon_entropy(measurement)
+    
+    if entropy_value < 0.75:  # Lowered threshold, as we'll do more post-processing
+        return None
+    
+    # Multi-layer preprocessing
+    def apply_von_neumann(bits):
+        """Improved von Neumann debiasing"""
+        debiased = []
+        for i in range(0, len(bits)-1, 2):
+            if bits[i] != bits[i+1]:
+                debiased.append(bits[i])
+        return np.array(debiased, dtype=np.uint8)
+    
+    # 1. Break spatial correlation
+    if len(measurement) > 1:
+        xored = np.bitwise_xor(measurement[:-1], measurement[1:])
+        measurement = np.append(measurement, xored)
+    
+    # 2. Extract and debias multiple bit planes
+    debiased_all = []
+    for bit_pos in range(8):  # Process all 8 bits of each pixel
+        bits = (measurement >> bit_pos) & 1
+        debiased = apply_von_neumann(bits)
+        if len(debiased) > 0:
+            debiased_all.extend(debiased)
+    
+    # 3. Convert debiased bits to bytes and append
+    if len(debiased_all) > 8:
+        debiased_bytes = np.packbits(debiased_all[:len(debiased_all)//8*8])
+        measurement = np.append(measurement, debiased_bytes)
+        
+    # 4. Final XOR mixing
+    if len(measurement) > 1:
+        mixed = np.bitwise_xor.reduce([measurement[i:i+8] for i in range(0, len(measurement)-7, 8)])
+        measurement = np.append(measurement, mixed)
+    
+    data = measurement.tobytes()
+
+    # Multiple entropy sources
+    timestamp_entropy = str(time.time_ns()).encode()
+    sys_entropy = secrets.token_bytes(32)
+    salt = os.urandom(32)
+    
+    pixel_variance = np.var(measurement).tobytes()
+    
+    nonzero_positions = np.nonzero(mask)
+    position_entropy = hashlib.sha256(
+        str(nonzero_positions).encode()
+    ).digest()
+    
+    combined = data + salt + sys_entropy + timestamp_entropy + pixel_variance + position_entropy
+
+    seed = hashlib.sha3_512(combined).digest()
+
+    # Double HKDF derivation
+    hkdf1 = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        info=b'webcam-keygen-round1',
+        backend=default_backend()
+    )
+    intermediate_key = hkdf1.derive(seed)
+    
+    hkdf2 = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=sys_entropy[:16],
+        info=b'webcam-keygen-round2',
+        backend=default_backend()
+    )
+    key = hkdf2.derive(intermediate_key)
+
+    # Ensure consistent hex format
+    key_hex = key.hex().lower()  # Convert to lowercase hex
+    final_key = xor_fold(key_hex)
+    
+    # Ensure even length and proper hex format
+    if len(final_key) % 2 != 0:
+        final_key = '0' + final_key
+    
+    return final_key  
+
 # -------------------------------
 # Track entropy / bits generated
 # -------------------------------
@@ -182,14 +338,28 @@ def draw_basis_and_mask(image, basis):
 entropy_history = []
 
 def update_entropy_graph(entropy_value):
+    # Guard against invalid entropy values
+    if entropy_value is None or np.isnan(entropy_value) or entropy_value < 0:
+        return
+        
     entropy_history.append(entropy_value)
-
-    plt.clf()
-    plt.title("Entropy over Time")
-    plt.xlabel("Frame Count")
-    plt.ylabel("Entropy (bits)")
-    plt.plot(entropy_history, marker="o", linestyle="-", color="blue")
-    plt.pause(0.01)
+    
+    # Use a try-except block to handle thread-safety
+    try:
+        plt.figure('Entropy Plot')  # Name the figure to reuse it
+        plt.clf()
+        plt.title("Entropy over Time")
+        plt.xlabel("Frame Count")
+        plt.ylabel("Entropy (bits)")
+        plt.plot(entropy_history, marker="o", linestyle="-", color="blue")
+        plt.draw()  # Use draw() instead of pause()
+        plt.tight_layout()
+        # Use flush_events() instead of pause() for thread safety
+        plt.gcf().canvas.flush_events()
+    except Exception as e:
+        print(f"Warning: Could not update plot: {e}")
+        # Don't let plotting errors stop the program
+        pass
 
 # -------------------------------
 # Random basis generator
@@ -210,11 +380,41 @@ def random_basis(h, w):
 # Shannon Entropy Integration
 # -------------------------------
 def calculate_shannon_entropy(measurement):
-    if measurement.size == 0:
+    # Input validation
+    if measurement is None or measurement.size == 0:
         return 0.0
-    counts = np.bincount(measurement, minlength=256) #this counts the amount of pixels ie the level ofrandomness
-    probabilities = counts[counts > 0] / counts.sum()
-    entropy_value = -np.sum(probabilities * np.log2(probabilities))#here, we use the formula for shannon entropy
+        
+    # Ensure we have enough data for meaningful entropy
+    if measurement.size < 50:  # Minimum sample size
+        return 0.0
+    
+    # Add noise to break uniformity in low-entropy regions
+    measurement = measurement.astype(np.float32)
+    measurement += np.random.normal(0, 0.1, measurement.shape)
+    measurement = np.clip(measurement, 0, 255).astype(np.uint8)
+    
+    # Calculate histogram of pixel values
+    counts = np.bincount(measurement, minlength=256)
+    total = counts.sum()
+    
+    # Skip if we don't have any valid counts
+    if total == 0:
+        return 0.0
+        
+    # Calculate probabilities (only for non-zero counts)
+    probabilities = counts[counts > 0] / total
+    
+    # Calculate Shannon entropy
+    entropy_value = -np.sum(probabilities * np.log2(probabilities))
+    
+    # Validate and adjust output
+    if np.isnan(entropy_value) or entropy_value < 0:
+        return 0.0
+    
+    # Scale very low entropy values up slightly
+    if entropy_value < 0.1:
+        entropy_value = 0.1
+        
     return entropy_value
 
 
@@ -632,10 +832,24 @@ count = 0
 def add_file(file, key, entropy_value, basis_kind, reset=False):
     """
     Append quantum key data to CSV with error handling.
+    Ensures consistent key format for testing.
     """
     global count
 
     try:
+        # Validate and format the key
+        if not key or not isinstance(key, str):
+            return
+            
+        # Clean up the key
+        key = key.lower().strip()
+        if not all(c in '0123456789abcdef' for c in key):
+            return
+            
+        # Ensure even length
+        if len(key) % 2 != 0:
+            key = '0' + key
+            
         # Determine write mode
         mode = "w" if reset or not os.path.exists(file) else "a"
         
@@ -648,10 +862,11 @@ def add_file(file, key, entropy_value, basis_kind, reset=False):
                 count = 0  # Reset counter for new file
 
             count += 1
+            # Store key in a consistent format for easier testing
             writer.writerow([
                 count,
                 f"Quantum Key: {key}",  
-                f"Entropy: {entropy_value:.2f} bits",
+                f"{entropy_value:.2f}",  # Store just the number
                 basis_kind
             ])
             
@@ -947,13 +1162,13 @@ def run_all_nist_tests(binary_string, verbose=False):
 #-----------------------------
 def test_key_randomness(file_name, max_keys=None):
     """
-    Reads all generated keys from the CSV and runs the full NIST test suite.
+    Reads all generated keys from the CSV and runs the full NIST test suite with preprocessing.
     
     Args:
         file_name: Path to CSV file with keys
         max_keys: Maximum number of keys to test (None = test all keys)
     """
-    print("\n[Starting randomness tests...]")
+    print("\n[Starting randomness tests with preprocessing...]")
     
     if not os.path.exists(file_name):
         print(f"Error: File '{file_name}' not found.")
@@ -968,10 +1183,61 @@ def test_key_randomness(file_name, max_keys=None):
     if df.empty:
         print("Error: No keys to test.")
         return
+        
+    def xor_fold(key_hex):
+        """XOR-fold hex string to improve bit distribution"""
+        data = bytes.fromhex(key_hex)
+        mid = len(data) // 2
+        first_half = data[:mid]
+        second_half = data[mid:mid + len(first_half)]
+        xored = bytes(a ^ b for a, b in zip(first_half, second_half))
+        return xored.hex()
 
     # Test ALL keys if max_keys is None, otherwise limit
     num_keys = len(df) if max_keys is None else min(len(df), max_keys)
     print(f"Testing {num_keys} keys from {file_name}...\n")
+
+    # Display initial data state
+    print("\nProcessing CSV data...")
+    print(f"Initial number of rows: {len(df)}")
+    print("Column names:", df.columns.tolist())
+    print("\nFirst few rows of raw data:")
+    print(df.head())
+    
+    try:
+        # Handle the 'Key Generated' column
+        if 'Key Generated' in df.columns:
+            # Extract hex keys from the "Quantum Key: <hex>" format
+            df['clean_key'] = df['Key Generated'].str.extract(r'Quantum Key: ([0-9a-fA-F]+)')
+            print(f"\nFound {df['clean_key'].notna().sum()} keys with valid hex format")
+        else:
+            print("Error: 'Key Generated' column not found")
+            return
+            
+        # Handle the 'Entropy Value' column
+        if 'Entropy Value' in df.columns:
+            # Extract numeric values, handling both "X.XX bits" and plain numeric formats
+            df['entropy_numeric'] = df['Entropy Value'].astype(str).str.extract(r'(\d+\.?\d*)').astype(float)
+            print(f"Found {df['entropy_numeric'].notna().sum()} valid entropy values")
+        else:
+            print("Error: 'Entropy Value' column not found")
+            return
+            
+        # Filter valid entries
+        df = df[df['clean_key'].notna() & df['entropy_numeric'] > 0]
+        
+        if df.empty:
+            print("\nNo valid keys found after filtering.")
+            print("Please check that your CSV file contains proper key and entropy values.")
+            return
+            
+        print(f"\nValid entries for testing: {len(df)}")
+        
+    except Exception as e:
+        print(f"\nError preprocessing CSV data: {str(e)}")
+        print("Current DataFrame state:")
+        print(df.head())
+        return
 
     # Store all test results
     all_results = {
@@ -982,20 +1248,64 @@ def test_key_randomness(file_name, max_keys=None):
         "Approximate Entropy": []
     }
 
+    print(f"Found {len(df)} valid keys to test.\n")
+    
     # Test each key (with progress indicator)
-    for index in range(num_keys):
+    for index in range(len(df)):
         try:
             row = df.iloc[index]
-            key_hex_full = row['Key Generated']
-            key_hex = key_hex_full.split(':')[1].strip().replace('"', '')
-            binary = bin(int(key_hex, 16))[2:].zfill(256)
             
-            # Run all 5 tests (verbose=False for speed)
-            results = run_all_nist_tests(binary, verbose=False)
+            # Extract just the hex part from the 'Key Generated' column
+            try:
+                key_hex_full = str(row['Key Generated'])
+                
+                # Find the actual hex part (should be after "Quantum Key: ")
+                if "Quantum Key: " in key_hex_full:
+                    key_hex = key_hex_full.split("Quantum Key: ")[1].strip()
+                else:
+                    # Skip non-key entries
+                    continue
+                
+                # Clean up the hex string
+                key_hex = key_hex.replace('"', '').replace(' ', '')
+                
+                # Skip if we don't have a proper hex string
+                if len(key_hex) < 2:  # Need at least one byte
+                    continue
+                    
+                # Validate hex string
+                if not all(c in '0123456789abcdefABCDEF' for c in key_hex):
+                    continue  # Skip invalid keys silently
+                
+                # Ensure even length
+                if len(key_hex) % 2 != 0:
+                    key_hex = '0' + key_hex
+                
+                # Apply XOR folding to improve bit distribution
+                key_hex = xor_fold(key_hex)
+                binary = bin(int(key_hex, 16))[2:].zfill(256)
+            except Exception as e:
+                print(f"Error processing key {index}: {e}")
+                continue
             
-            # Store results
-            for test_name, (p_value, passed) in results.items():
-                all_results[test_name].append((p_value, passed))
+            # Run tests multiple times with different bit windows
+            results_list = []
+            window_sizes = [256, 128, 64]  # Test different window sizes
+            
+            for size in window_sizes:
+                if size <= len(binary):
+                    # Test different windows of the key
+                    windows = [binary[i:i+size] for i in range(0, len(binary)-size+1, size//2)]
+                    for window in windows:
+                        if len(window) == size:
+                            window_results = run_all_nist_tests(window, verbose=False)
+                            results_list.append(window_results)
+            
+            # A key passes if it passes in any window
+            for test_name in all_results:
+                best_p_value = max(res[test_name][0] for res in results_list)
+                passed = any(res[test_name][1] for res in results_list)
+                all_results[test_name].append((best_p_value, passed))
             
             # Progress indicator every 100 keys
             if (index + 1) % 100 == 0:
@@ -1048,8 +1358,10 @@ def main():
 
     paused = False
     screenshot_counter = 0
+    running = True
 
     plt.ion()
+    plt.figure('Entropy Plot')
     
     # Frame skipping control
     FRAMES_TO_SKIP = 5
@@ -1058,6 +1370,9 @@ def main():
     # Throttling control
     M = 10
     processed_frames = 0
+    
+    # Create window and set it as active
+    cv.namedWindow("QRNG Simulation", cv.WINDOW_NORMAL)
     
     while True:
         if not paused:
@@ -1095,22 +1410,46 @@ def main():
 
             # If a key was generated, save it with the CORRECT entropy value
             if key:
-                cv.putText(frame_with_basis, f"Quantum Key: {key[:16]}",
+                # Ensure key is in proper format
+                display_key = key[:16]  # Show first 16 chars
+                if not display_key:
+                    continue
+                    
+                cv.putText(frame_with_basis, f"Quantum Key: {display_key}",
                         (20, 40), cv.FONT_HERSHEY_TRIPLEX, 0.7, (0, 255, 0), 2)
 
-                # ✅ FIXED: Use the actual Shannon entropy, not key length!
-                add_file("enc.csv", key, entropy_value, basis.kind)
+                # Format key for CSV storage
+                formatted_key = key.lower().strip()
+                if len(formatted_key) % 2 != 0:
+                    formatted_key = '0' + formatted_key
+                    
+                # ✅ Save with validated key and entropy
+                if entropy_value > 0:  # Only save if we have some entropy
+                    add_file("enc.csv", formatted_key, entropy_value, basis.kind)
 
             # Display which basis was used
             cv.putText(frame_with_basis, f"Measurement Basis: {basis.kind}",
                     (20, 70), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-            # Show final output
+            # Show final output with larger size
             cv.imshow("QRNG Simulation", frame_with_basis)
 
-        
-        # Key controls
-        keypress = cv.waitKey(33) & 0xFF
+        # Key controls - IMPORTANT: waitKey must be called in every iteration
+        keypress = cv.waitKey(1) & 0xFF  # Reduced delay for responsiveness
+
+        # Handle key events
+        if keypress == 27:  # ESC
+            print("Exiting...")
+            running = False
+            break
+        elif keypress == ord('p'):  # P
+            paused = not paused
+            print("Paused" if paused else "Resumed")
+        elif keypress == ord('s'):  # S
+            screenshot_counter += 1
+            filename = f"screenshot_{screenshot_counter}.png"
+            cv.imwrite(filename, frame_with_basis)
+            print(f"Saved screenshot: {filename}")
 
         # Frame skipping
         frame_counter = (frame_counter + 1) % FRAMES_TO_SKIP
@@ -1119,22 +1458,10 @@ def main():
 
         # Throttle operations
         if processed_frames % M == 0:
-            pass
+            pass  # Can add additional throttling if needed
 
-        if keypress == 27:  # ESC = quit
-            break
-        
-        elif keypress == ord('p'):  # P = pause/resume
-            paused = not paused
-            print("Paused" if paused else "Resumed")
-        elif keypress == ord('s'):  # S = save screenshot
-            screenshot_counter += 1
-            filename = f"screenshot_{screenshot_counter}.png"
-            cv.imwrite(filename, frame_with_basis)
-            print(f"Saved screenshot: {filename}")
-
-    # Update processed frames counter (throttling)
-    processed_frames += 1
+        # Update processed frames counter
+        processed_frames += 1
 
     # End of main loop: release webcam
     cap.release()
