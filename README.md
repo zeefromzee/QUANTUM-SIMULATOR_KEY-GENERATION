@@ -1,7 +1,7 @@
 # .*･Quantum-Inspired Key Generator & NIST Randomness Test Suite･*.☆
 
-Welcome to the shiny ✧ professional ✧ quantum-inspired cryptographic key generator project, paired with a comprehensive randomness analytics suite. This system simulates quantum entropy extraction and applies NIST-grade randomness testing to help you generate and validate secure keys.
-
+Welcome to th ✧✧ quantum-inspired cryptographic key generator project, paired with a comprehensive randomness analytics suite. This system simulates quantum entropy extraction and applies NIST-grade randomness testing to help you generate and validate secure keys.
+{**Humble Request**: Please consider starring the repo after cloning it, really motivates me to make more projects like this one :D  ) 
 ---
 
 ## ｡･:*:･ﾟ✧ Highlights ✧･:*:･ﾟ｡
